@@ -1,0 +1,63 @@
+services:
+  db:
+    image: mariadb:11.4
+    container_name: odoocrm-dev-db
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: ${WORDPRESS_DB_NAME}
+      MARIADB_USER: ${WORDPRESS_DB_USER}
+      MARIADB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+    volumes:
+      - odoocrm_dev_db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - odoocrm_dev
+
+  wordpress:
+    image: wordpress:php8.3-apache
+    container_name: odoocrm-dev-wordpress
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      WORDPRESS_DB_HOST: db:3306
+      WORDPRESS_DB_NAME: ${WORDPRESS_DB_NAME}
+      WORDPRESS_DB_USER: ${WORDPRESS_DB_USER}
+      WORDPRESS_DB_PASSWORD: ${WORDPRESS_DB_PASSWORD}
+      WORDPRESS_DEBUG: "1"
+    ports:
+      - "${WORDPRESS_PORT}:80"
+    volumes:
+      - odoocrm_dev_wordpress:/var/www/html
+      - ./plugin/odoo-crm:/var/www/html/wp-content/plugins/odoo-crm
+    networks:
+      - odoocrm_dev
+
+  mock-odoo:
+    build:
+      context: ./dev/mock-odoo
+    container_name: odoocrm-dev-mock-odoo
+    restart: unless-stopped
+    environment:
+      MOCK_ODOO_USER_ID: "42"
+    ports:
+      - "${MOCK_ODOO_PORT}:8069"
+    volumes:
+      - ./dev/mock-odoo/data:/data
+    networks:
+      - odoocrm_dev
+
+volumes:
+  odoocrm_dev_db:
+  odoocrm_dev_wordpress:
+
+networks:
+  odoocrm_dev:
+    name: odoocrm-dev-network
