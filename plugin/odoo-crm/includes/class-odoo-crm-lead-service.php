@@ -4,7 +4,7 @@ defined('ABSPATH') || exit;
 
 final class Odoo_CRM_Lead_Service
 {
-    public static function submit(int $form_id, int $entry_id, array $submission): array
+    public static function submit(int $form_id, int $entry_id, array $submission, string $trigger = 'submission'): array
     {
         $settings = Odoo_CRM_Form_Settings::get($form_id);
         if (empty($settings['enabled'])) {
@@ -12,6 +12,26 @@ final class Odoo_CRM_Lead_Service
                 'success' => false,
                 'code' => 'FORM_DISABLED',
                 'message' => 'Odoo CRM integration is disabled for this form.',
+            ];
+        }
+
+        $catalog = Odoo_CRM_Routing_Catalog::cached();
+        $routing_health = Odoo_CRM_Form_Settings::routing_health($settings, $catalog);
+        if (($routing_health['state'] ?? '') === 'blocked') {
+            $result = [
+                'success' => false,
+                'code' => 'ROUTING_CONFIGURATION_INVALIDATED',
+                'message' => (string) (($routing_health['blocking'][0] ?? '') ?: 'Odoo routing configuration is blocked.'),
+            ];
+            Odoo_CRM_Logger::record($form_id, $entry_id, false, $result['code']);
+            return $result;
+        }
+
+        if (Odoo_CRM_Delivery_Receipt::exists($form_id, $entry_id)) {
+            return [
+                'success' => true,
+                'code' => 'DELIVERY_ALREADY_COMPLETED',
+                'message' => 'This Fluent Forms entry has already been delivered to Odoo.',
             ];
         }
 
@@ -27,6 +47,17 @@ final class Odoo_CRM_Lead_Service
         }
 
         $lead_fields = self::build_lead_fields($form, $submission, $settings, $entry_id);
+
+        $partner = Odoo_CRM_Partner_Service::resolve($submission, $settings, $lead_fields);
+        if (empty($partner['success'])) {
+            Odoo_CRM_Logger::record($form_id, $entry_id, false, (string) ($partner['code'] ?? 'PARTNER_RESOLUTION_FAILED'));
+            return $partner;
+        }
+        $partner_id = isset($partner['partner_id']) ? (int) $partner['partner_id'] : 0;
+        if ($partner_id > 0) {
+            $lead_fields['partner_id'] = $partner_id;
+        }
+
         $client = new Odoo_CRM_Client(Odoo_CRM_Settings::get());
         $result = $client->create_lead($lead_fields);
 
@@ -37,6 +68,20 @@ final class Odoo_CRM_Lead_Service
             (string) ($result['code'] ?? 'unknown_error'),
             isset($result['lead_id']) ? (int) $result['lead_id'] : null
         );
+
+        if (!empty($result['success']) && !empty($result['lead_id'])) {
+            Odoo_CRM_Delivery_Receipt::record(
+                $form_id,
+                $entry_id,
+                (int) $result['lead_id'],
+                $partner_id > 0 ? $partner_id : null,
+                $trigger
+            );
+            if ($partner_id > 0) {
+                $result['partner_id'] = $partner_id;
+                $result['partner_code'] = (string) ($partner['code'] ?? 'PARTNER_RESOLVED');
+            }
+        }
 
         return $result;
     }
@@ -54,14 +99,9 @@ final class Odoo_CRM_Lead_Service
         ];
 
         $stage_id = (int) ($settings['routing']['stage']['id'] ?? 0);
-        $medium_id = (int) ($settings['routing']['medium']['id'] ?? 0);
-        $tag_ids = [];
-        foreach (($settings['routing']['tags'] ?? []) as $tag) {
-            if (is_array($tag) && !empty($tag['id'])) {
-                $tag_ids[] = (int) $tag['id'];
-            }
-        }
-        $tag_ids = array_values(array_unique(array_filter($tag_ids, static fn($id) => $id > 0)));
+        $catalog = Odoo_CRM_Routing_Catalog::cached();
+        $medium_id = Odoo_CRM_Form_Settings::effective_medium_id($settings, $catalog);
+        $tag_ids = Odoo_CRM_Form_Settings::effective_tag_ids($settings, $catalog);
 
         if ($stage_id > 0) {
             $lead_fields['stage_id'] = $stage_id;

@@ -106,6 +106,108 @@ final class Odoo_CRM_Client
         ];
     }
 
+    public function find_partners_by_email(string $email): array
+    {
+        $email = strtolower(trim(sanitize_email($email)));
+        if ($email === '') {
+            return [
+                'success' => false,
+                'code' => 'PARTNER_EMAIL_REQUIRED',
+                'message' => 'A valid donor email address is required for partner resolution.',
+            ];
+        }
+
+        $authentication = $this->authenticate();
+        if (!$authentication['success']) {
+            return $authentication;
+        }
+
+        $result = $this->rpc_call('object', 'execute_kw', [
+            $this->connection['database'],
+            (int) $authentication['user_id'],
+            $this->connection['api_key'],
+            'res.partner',
+            'search_read',
+            [[['email', '=ilike', $email]]],
+            [
+                'fields' => ['id', 'name', 'email'],
+                'limit' => 3,
+                'order' => 'id asc',
+            ],
+        ]);
+
+        if (!$result['success']) {
+            return $result;
+        }
+        if (!is_array($result['result'])) {
+            return [
+                'success' => false,
+                'code' => 'INVALID_RESPONSE',
+                'message' => 'Odoo returned an invalid partner search response.',
+            ];
+        }
+
+        $records = [];
+        foreach ($result['result'] as $record) {
+            if (!is_array($record)) {
+                continue;
+            }
+            $record_email = strtolower(trim(sanitize_email((string) ($record['email'] ?? ''))));
+            $id = absint($record['id'] ?? 0);
+            if ($id > 0 && $record_email === $email) {
+                $records[] = [
+                    'id' => $id,
+                    'name' => sanitize_text_field((string) ($record['name'] ?? '')),
+                    'email' => $record_email,
+                ];
+            }
+        }
+
+        return [
+            'success' => true,
+            'code' => 'PARTNER_SEARCH_OK',
+            'message' => 'Partner search completed.',
+            'records' => $records,
+        ];
+    }
+
+    public function create_partner(array $partner_fields): array
+    {
+        $authentication = $this->authenticate();
+        if (!$authentication['success']) {
+            return $authentication;
+        }
+
+        $result = $this->rpc_call('object', 'execute_kw', [
+            $this->connection['database'],
+            (int) $authentication['user_id'],
+            $this->connection['api_key'],
+            'res.partner',
+            'create',
+            [$partner_fields],
+        ]);
+
+        if (!$result['success']) {
+            return $result;
+        }
+
+        $partner_id = is_numeric($result['result']) ? (int) $result['result'] : 0;
+        if ($partner_id <= 0) {
+            return [
+                'success' => false,
+                'code' => 'PARTNER_CREATION_FAILED',
+                'message' => 'Odoo did not return a partner ID.',
+            ];
+        }
+
+        return [
+            'success' => true,
+            'code' => 'PARTNER_CREATED',
+            'message' => 'Odoo partner created.',
+            'partner_id' => $partner_id,
+        ];
+    }
+
     private function search_read_named_records(int $user_id, string $model, int $limit): array
     {
         $result = $this->rpc_call('object', 'execute_kw', [

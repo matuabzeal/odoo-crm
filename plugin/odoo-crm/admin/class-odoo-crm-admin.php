@@ -12,6 +12,7 @@ final class Odoo_CRM_Admin
         add_action('admin_menu', [self::class, 'register_menu']);
         add_action('admin_post_odoo_crm_test_connection', [self::class, 'handle_test_connection']);
         add_action('admin_post_odoo_crm_save_form', [self::class, 'handle_save_form']);
+        add_action('admin_post_odoo_crm_refresh_routing', [self::class, 'handle_refresh_routing']);
         add_action('admin_post_odoo_crm_clear_diagnostics', [self::class, 'handle_clear_diagnostics']);
         add_filter('plugin_row_meta', [self::class, 'plugin_row_meta'], 10, 2);
         add_action('admin_footer-plugins.php', [self::class, 'render_dependency_label_script']);
@@ -96,21 +97,24 @@ final class Odoo_CRM_Admin
         if ($form_id > 0) { self::render_form_editor($form_id, $notice); return; }
 
         $forms = Odoo_CRM_Fluent_Forms_Adapter::get_forms();
+        $catalog = Odoo_CRM_Routing_Catalog::cached();
         ?>
         <div class="wrap">
             <h1>Odoo CRM</h1><h2>Forms</h2>
             <p>Enable and route individual Fluent Forms to Odoo CRM. Odoo automation and Activity configuration remain managed in Odoo.</p>
+            <?php self::render_routing_catalog_status($catalog, $notice); ?>
+            <?php self::render_refresh_routing_form(); ?>
             <?php if (!$forms) : ?>
                 <div class="notice notice-info inline"><p>No Fluent Forms are currently available in this WordPress environment.</p></div>
             <?php else : ?>
                 <table class="widefat striped"><thead><tr><th>Form</th><th>Status</th><th>Odoo</th><th>Stage</th><th>Medium</th><th></th></tr></thead><tbody>
-                <?php foreach ($forms as $form) : $settings = Odoo_CRM_Form_Settings::get($form['id']); ?>
+                <?php foreach ($forms as $form) : $settings = Odoo_CRM_Form_Settings::get($form['id']); $routing_health = Odoo_CRM_Form_Settings::routing_health($settings, $catalog); ?>
                     <tr>
                         <td><strong><?php echo esc_html($form['title']); ?></strong><br><code>ID <?php echo esc_html((string) $form['id']); ?></code></td>
                         <td><?php echo esc_html($form['status']); ?></td>
-                        <td><?php echo !empty($settings['enabled']) ? 'Enabled' : 'Disabled'; ?></td>
-                        <td><?php echo !empty($settings['routing']['stage']['id']) ? esc_html((string) $settings['routing']['stage']['id']) : '&mdash;'; ?></td>
-                        <td><?php echo !empty($settings['routing']['medium']['id']) ? esc_html((string) $settings['routing']['medium']['id']) : '&mdash;'; ?></td>
+                        <td><strong><?php echo esc_html((string) ($routing_health['label'] ?? 'Disabled')); ?></strong><?php if (($routing_health['state'] ?? '') === 'enabled_warning') : ?><br><span class="description"><?php echo esc_html(count($routing_health['warnings'] ?? [])); ?> routing warning(s)</span><?php elseif (($routing_health['state'] ?? '') === 'blocked') : ?><br><span class="description">Delivery refused until corrected</span><?php endif; ?></td>
+                        <td><?php echo self::routing_summary($settings['routing']['stage'] ?? [], $catalog['stages'] ?? []); ?></td>
+                        <td><?php echo self::routing_summary($settings['routing']['medium'] ?? [], $catalog['mediums'] ?? []); ?></td>
                         <td><a class="button" href="<?php echo esc_url(add_query_arg(['page' => self::FORMS_SLUG, 'form_id' => $form['id']], admin_url('admin.php'))); ?>">Configure</a></td>
                     </tr>
                 <?php endforeach; ?>
@@ -130,48 +134,62 @@ final class Odoo_CRM_Admin
 
         $settings = Odoo_CRM_Form_Settings::get($form_id);
         $tag_ids = Odoo_CRM_Form_Settings::tag_ids($settings);
-        $catalog = Odoo_CRM_Routing_Catalog::discover();
-        $catalog_ok = !empty($catalog['success']);
+        $catalog = Odoo_CRM_Routing_Catalog::cached();
+        $catalog_ok = !empty($catalog['available']);
+        $routing_health = Odoo_CRM_Form_Settings::routing_health($settings, $catalog);
         $record_title = $settings['record_title'] !== '' ? $settings['record_title'] : $form['title'] . ': Web Inquiry';
         ?>
         <div class="wrap">
             <h1>Odoo CRM</h1><h2>Forms &rsaquo; <?php echo esc_html($form['title']); ?></h2>
             <?php if ($notice === 'form_saved') : ?><div class="notice notice-success is-dismissible"><p>Form configuration saved.</p></div><?php endif; ?>
+            <?php self::render_routing_catalog_status($catalog, $notice); ?>
+            <?php if (($routing_health['state'] ?? '') === 'blocked') : ?><div class="notice notice-error inline"><p><strong>Odoo delivery is blocked.</strong> <?php echo esc_html((string) (($routing_health['blocking'][0] ?? '') ?: 'Correct the required routing configuration before delivery can resume.')); ?></p></div><?php elseif (($routing_health['state'] ?? '') === 'enabled_warning') : ?><div class="notice notice-warning inline"><p><strong>Odoo delivery is enabled with warnings.</strong> <?php echo esc_html(implode(' ', $routing_health['warnings'] ?? [])); ?></p></div><?php endif; ?>
             <p><a href="<?php echo esc_url(add_query_arg(['page' => self::FORMS_SLUG], admin_url('admin.php'))); ?>">&larr; Back to Forms</a></p>
+            <?php self::render_refresh_routing_form($form_id); ?>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <input type="hidden" name="action" value="odoo_crm_save_form"><input type="hidden" name="form_id" value="<?php echo esc_attr((string) $form_id); ?>"><?php wp_nonce_field('odoo_crm_save_form_' . $form_id); ?>
 
                 <h2>Integration</h2>
                 <table class="form-table" role="presentation">
-                    <tr><th scope="row">Enable Odoo</th><td><label><input type="checkbox" name="odoo_crm_form[enabled]" value="1" <?php checked(!empty($settings['enabled'])); ?>> Send new submissions from this form to Odoo CRM.</label></td></tr>
+                    <tr><th scope="row">Odoo delivery</th><td><label><input type="checkbox" name="odoo_crm_form[enabled]" value="1" <?php checked(!empty($settings['enabled'])); ?>> Enable delivery from this form to Odoo CRM.</label></td></tr>
+                    <tr><th scope="row"><label for="odoo-crm-delivery-trigger">Delivery Trigger</label></th><td><select id="odoo-crm-delivery-trigger" name="odoo_crm_form[delivery_trigger]"><option value="submission" <?php selected(($settings['delivery_trigger'] ?? 'submission'), 'submission'); ?>>Successful form submission</option><option value="payment_paid" <?php selected(($settings['delivery_trigger'] ?? 'submission'), 'payment_paid'); ?>>Successful payment (Fluent Forms status = paid)</option></select><p class="description">Use successful payment for donation/payment forms so Odoo delivery waits for Fluent Forms to confirm payment.</p></td></tr>
                     <tr><th scope="row"><label for="odoo-crm-record-title">Record Title</label></th><td><input id="odoo-crm-record-title" class="regular-text" type="text" name="odoo_crm_form[record_title]" value="<?php echo esc_attr($record_title); ?>"></td></tr>
+                    <tr><th scope="row">Partner Resolution</th><td><label><input type="checkbox" name="odoo_crm_form[partner][enabled]" value="1" <?php checked(!empty($settings['partner']['enabled'])); ?>> Resolve or create an Odoo contact (res.partner) before creating the CRM record.</label><p class="description">Existing contacts are matched conservatively by exact normalized email. Existing contact data is never overwritten.</p></td></tr>
+                    <tr><th scope="row"><label for="odoo-crm-partner-email-field">Partner Email Source</label></th><td><select id="odoo-crm-partner-email-field" name="odoo_crm_form[partner][email_field]"><option value="">Automatic (mapped CRM email)</option><?php foreach ($form['fields'] as $partner_field) : $partner_field_name = (string) ($partner_field['name'] ?? ''); if ($partner_field_name === '') { continue; } ?><option value="<?php echo esc_attr($partner_field_name); ?>" <?php selected((string) ($settings['partner']['email_field'] ?? ''), $partner_field_name); ?>><?php echo esc_html((string) ($partner_field['label'] ?? $partner_field_name)); ?> — <?php echo esc_html($partner_field_name); ?></option><?php endforeach; ?></select><p class="description">Choose the donor email field when its Fluent Forms technical name is not <code>email_from</code>.</p></td></tr>
+                    <tr><th scope="row"><label for="odoo-crm-partner-name-field">Partner Name Source</label></th><td><select id="odoo-crm-partner-name-field" name="odoo_crm_form[partner][name_field]"><option value="">Automatic (mapped CRM contact name)</option><?php foreach ($form['fields'] as $partner_field) : $partner_field_name = (string) ($partner_field['name'] ?? ''); if ($partner_field_name === '') { continue; } ?><option value="<?php echo esc_attr($partner_field_name); ?>" <?php selected((string) ($settings['partner']['name_field'] ?? ''), $partner_field_name); ?>><?php echo esc_html((string) ($partner_field['label'] ?? $partner_field_name)); ?> — <?php echo esc_html($partner_field_name); ?></option><?php endforeach; ?></select><p class="description">If no name is available, the donor email is used as the Odoo contact name.</p></td></tr>
                 </table>
 
                 <h2>Odoo Routing</h2>
-                <p>These resources are created and governed in Odoo. The plugin reads them from the configured Odoo database and stores both the selected IDs and their display names.</p>
+                <p>These resources are created and governed in Odoo. The plugin uses the last successfully refreshed routing catalogue and stores both the selected IDs and their display names.</p>
+                <p style="margin: 8px 0 16px;"><button type="submit" class="button button-secondary" form="odoo-crm-refresh-routing-form">Refresh Odoo Data</button></p>
                 <?php if (!$catalog_ok) : ?>
-                    <div class="notice notice-warning inline"><p>Odoo routing resources could not be loaded. Existing selections are preserved; test the Connection before changing routing.</p></div>
+                    <div class="notice notice-warning inline"><p>Routing choices are unavailable until Odoo data is refreshed for the current connection. Existing selections are preserved.</p></div>
                 <?php endif; ?>
                 <table class="form-table" role="presentation">
                     <tr><th scope="row"><label for="odoo-crm-stage-id">Stage</label></th><td>
                         <select id="odoo-crm-stage-id" name="odoo_crm_form[routing][stage][id]" <?php disabled(!$catalog_ok); ?>>
                             <option value="0">— Select stage —</option>
-                            <?php foreach (($catalog['stages'] ?? []) as $option) : ?><option value="<?php echo esc_attr((string) $option['id']); ?>" <?php selected((int) $settings['routing']['stage']['id'], (int) $option['id']); ?>><?php echo esc_html($option['name']); ?></option><?php endforeach; ?>
+                            <?php foreach (($catalog['stages'] ?? []) as $option) : ?><option value="<?php echo esc_attr((string) $option['id']); ?>" <?php selected(!$routing_health['missing_stage'] && (int) $settings['routing']['stage']['id'] === (int) $option['id']); ?>><?php echo esc_html($option['name']); ?></option><?php endforeach; ?>
                         </select>
+                        <?php if (!empty($routing_health['missing_stage'])) : ?><input type="hidden" name="odoo_crm_form[routing][stage][preserved_id]" value="<?php echo esc_attr((string) $settings['routing']['stage']['id']); ?>"><input type="hidden" name="odoo_crm_form[routing][stage][preserved_name]" value="<?php echo esc_attr((string) ($settings['routing']['stage']['name'] ?? '')); ?>"><p class="description" style="color:#b32d2e;"><strong>Blocking:</strong> <?php echo esc_html((string) ($routing_health['blocking'][0] ?? 'Configured Stage is unavailable.')); ?> Prior value is preserved internally until a valid replacement is selected.</p><?php endif; ?>
                         <?php if (!$catalog_ok && !empty($settings['routing']['stage']['id'])) : ?><input type="hidden" name="odoo_crm_form[routing][stage][id]" value="<?php echo esc_attr((string) $settings['routing']['stage']['id']); ?>"><?php endif; ?>
                     </td></tr>
                     <tr><th scope="row"><label for="odoo-crm-medium-id">Medium</label></th><td>
                         <select id="odoo-crm-medium-id" name="odoo_crm_form[routing][medium][id]" <?php disabled(!$catalog_ok); ?>>
                             <option value="0">— Select medium —</option>
                             <?php foreach (($catalog['mediums'] ?? []) as $option) : ?><option value="<?php echo esc_attr((string) $option['id']); ?>" <?php selected((int) $settings['routing']['medium']['id'], (int) $option['id']); ?>><?php echo esc_html($option['name']); ?></option><?php endforeach; ?>
+                            <?php if ($catalog_ok && !empty($settings['routing']['medium']['id']) && !Odoo_CRM_Routing_Catalog::has_id($catalog['mediums'] ?? [], (int) $settings['routing']['medium']['id'])) : ?><option value="<?php echo esc_attr((string) $settings['routing']['medium']['id']); ?>" selected><?php echo esc_html(self::missing_routing_label($settings['routing']['medium'])); ?></option><?php endif; ?>
                         </select>
+                        <?php if (!empty($routing_health['missing_medium'])) : ?><p class="description"><strong>Warning:</strong> <?php echo esc_html((string) (($routing_health['warnings'][0] ?? '') ?: 'Configured Medium is unavailable and will be omitted from delivery.')); ?></p><?php endif; ?>
                         <?php if (!$catalog_ok && !empty($settings['routing']['medium']['id'])) : ?><input type="hidden" name="odoo_crm_form[routing][medium][id]" value="<?php echo esc_attr((string) $settings['routing']['medium']['id']); ?>"><?php endif; ?>
                     </td></tr>
                     <tr><th scope="row"><label for="odoo-crm-tag-ids">Tags</label></th><td>
                         <select id="odoo-crm-tag-ids" name="odoo_crm_form[routing][tag_ids][]" multiple size="6" <?php disabled(!$catalog_ok); ?>>
                             <?php foreach (($catalog['tags'] ?? []) as $option) : ?><option value="<?php echo esc_attr((string) $option['id']); ?>" <?php selected(in_array((int) $option['id'], $tag_ids, true)); ?>><?php echo esc_html($option['name']); ?></option><?php endforeach; ?>
+                            <?php if ($catalog_ok) : foreach (($settings['routing']['tags'] ?? []) as $stored_tag) : $stored_tag_id = absint($stored_tag['id'] ?? 0); if ($stored_tag_id > 0 && !Odoo_CRM_Routing_Catalog::has_id($catalog['tags'] ?? [], $stored_tag_id)) : ?><option value="<?php echo esc_attr((string) $stored_tag_id); ?>" selected><?php echo esc_html(self::missing_routing_label($stored_tag)); ?></option><?php endif; endforeach; endif; ?>
                         </select>
                         <?php if (!$catalog_ok) : foreach ($tag_ids as $tag_id) : ?><input type="hidden" name="odoo_crm_form[routing][tag_ids][]" value="<?php echo esc_attr((string) $tag_id); ?>"><?php endforeach; endif; ?>
+                        <?php if (!empty($routing_health['missing_tags'])) : ?><p class="description"><strong>Warning:</strong> <?php echo esc_html(count($routing_health['missing_tags'])); ?> configured <?php echo count($routing_health['missing_tags']) === 1 ? 'Tag is' : 'Tags are'; ?> no longer available in Odoo. Missing values are preserved for diagnosis but omitted from delivery; remaining valid Tags continue to be sent.</p><?php foreach ($routing_health['missing_tags'] as $missing_tag) : ?><span class="description" style="display:block;">Previously configured: <?php echo esc_html((string) (($missing_tag['name'] ?? '') !== '' ? $missing_tag['name'] : 'ID ' . ($missing_tag['id'] ?? 0))); ?></span><?php endforeach; endif; ?>
                         <p class="description">Use Ctrl/Command to select multiple tags. Odoo many-to-many command syntax remains internal to the plugin.</p>
                     </td></tr>
                 </table>
@@ -187,7 +205,23 @@ final class Odoo_CRM_Admin
 
                 <h2>Field Routing</h2>
                 <p>Approved core field names map directly to Odoo and can also remain in Notes. System fields are excluded automatically. All other fields default to Notes.</p>
-                <table class="widefat striped">
+                <style>
+                    .odoo-crm-field-routing-table { table-layout: fixed; width: 100%; }
+                    .odoo-crm-field-routing-table th,
+                    .odoo-crm-field-routing-table td { vertical-align: top; }
+                    .odoo-crm-field-routing-table code { white-space: normal; overflow-wrap: anywhere; word-break: break-word; }
+                    .odoo-crm-field-routing-table select,
+                    .odoo-crm-field-routing-table input[type="text"] { max-width: 100%; }
+                </style>
+                <table class="widefat striped odoo-crm-field-routing-table">
+                    <colgroup>
+                        <col style="width:18%">
+                        <col style="width:22%">
+                        <col style="width:12%">
+                        <col style="width:14%">
+                        <col style="width:12%">
+                        <col style="width:22%">
+                    </colgroup>
                     <thead><tr><th>Field</th><th>Technical name</th><th>Type</th><th>Automatic destination</th><th>Override</th><th>Notes label override</th></tr></thead>
                     <tbody>
                     <?php foreach ($form['fields'] as $field) :
@@ -220,6 +254,74 @@ final class Odoo_CRM_Admin
             </form>
         </div>
         <?php
+    }
+
+    private static function render_refresh_routing_form(int $form_id = 0): void
+    {
+        $form_id_attr = $form_id > 0 ? ' id="odoo-crm-refresh-routing-form"' : '';
+        $style = $form_id > 0 ? 'display:none;' : 'margin: 8px 0 16px;';
+        ?>
+        <form<?php echo $form_id_attr; ?> method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="<?php echo esc_attr($style); ?>">
+            <input type="hidden" name="action" value="odoo_crm_refresh_routing">
+            <?php if ($form_id > 0) : ?><input type="hidden" name="form_id" value="<?php echo esc_attr((string) $form_id); ?>"><?php endif; ?>
+            <?php wp_nonce_field('odoo_crm_refresh_routing'); ?>
+            <?php if ($form_id <= 0) : ?><?php submit_button('Refresh Odoo Data', 'secondary', 'submit', false); ?><?php endif; ?>
+        </form>
+        <?php
+    }
+
+    private static function render_routing_catalog_status(array $catalog, string $notice): void
+    {
+        if ($notice === 'routing_refreshed') {
+            echo '<div class="notice notice-success is-dismissible"><p>Odoo routing data refreshed successfully. Saved display names were reconciled by authoritative Odoo IDs.</p></div>';
+        } elseif ($notice === 'routing_refresh_failed') {
+            echo '<div class="notice notice-error is-dismissible"><p>Odoo routing refresh failed. The last-known-good catalogue, if any, has been preserved.</p></div>';
+        }
+
+        if (!empty($catalog['available'])) {
+            $timestamp = isset($catalog['updated_at_utc']) ? strtotime((string) $catalog['updated_at_utc']) : false;
+            $display = $timestamp ? wp_date('j M Y, g:i a T', $timestamp) : 'Unknown';
+            echo '<p class="description"><strong>Routing data last refreshed:</strong> ' . esc_html($display) . '</p>';
+        } elseif (($catalog['status'] ?? '') === 'connection_changed') {
+            echo '<div class="notice notice-warning inline"><p>Saved connection details differ from the routing catalogue source. Refresh Odoo Data before changing routing.</p></div>';
+        } else {
+            echo '<p class="description"><strong>Routing data:</strong> Not refreshed yet for this connection.</p>';
+        }
+    }
+
+    private static function routing_summary(array $stored, array $records): string
+    {
+        $id = absint($stored['id'] ?? 0);
+        if ($id <= 0) {
+            return '&mdash;';
+        }
+        $name = sanitize_text_field((string) ($stored['name'] ?? ''));
+        $label = $name !== '' ? $name : 'ID ' . $id;
+        if ($records !== [] && !Odoo_CRM_Routing_Catalog::has_id($records, $id)) {
+            $label .= ' (not in current Odoo data)';
+        }
+        return esc_html($label);
+    }
+
+    private static function missing_routing_label(array $stored): string
+    {
+        $id = absint($stored['id'] ?? 0);
+        $name = sanitize_text_field((string) ($stored['name'] ?? ''));
+        $label = $name !== '' ? $name : 'ID ' . $id;
+        return $label . ' — unavailable in current Odoo data';
+    }
+
+    private static function has_missing_tags(array $stored_tags, array $records): bool
+    {
+        foreach ($stored_tags as $tag) {
+            if (is_array($tag)) {
+                $id = absint($tag['id'] ?? 0);
+                if ($id > 0 && !Odoo_CRM_Routing_Catalog::has_id($records, $id)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private static function destination_label(string $destination): string
@@ -294,6 +396,52 @@ final class Odoo_CRM_Admin
             $args['odoo_crm_notice'] = isset($result['code']) ? sanitize_key((string) $result['code']) : 'unknown_error';
         }
         wp_safe_redirect(add_query_arg($args, admin_url('admin.php'))); exit;
+    }
+
+    public static function handle_refresh_routing(): void
+    {
+        if (!current_user_can('manage_options')) { wp_die('You do not have permission to refresh Odoo routing data.'); }
+        check_admin_referer('odoo_crm_refresh_routing');
+        $form_id = isset($_POST['form_id']) ? absint($_POST['form_id']) : 0;
+        $before_catalog = Odoo_CRM_Routing_Catalog::cached();
+        $before_health = [];
+        foreach (Odoo_CRM_Form_Settings::get_all() as $configured_form_id => $stored) {
+            if (is_array($stored)) {
+                $before_health[(int) $configured_form_id] = Odoo_CRM_Form_Settings::routing_health(Odoo_CRM_Form_Settings::get((int) $configured_form_id), $before_catalog);
+            }
+        }
+        $result = Odoo_CRM_Routing_Catalog::refresh();
+        if (!empty($result['success'])) {
+            $after_catalog = Odoo_CRM_Routing_Catalog::cached();
+            foreach (Odoo_CRM_Form_Settings::get_all() as $configured_form_id => $stored) {
+                $configured_form_id = (int) $configured_form_id;
+                if (!is_array($stored) || $configured_form_id <= 0) {
+                    continue;
+                }
+                $after = Odoo_CRM_Form_Settings::routing_health(Odoo_CRM_Form_Settings::get($configured_form_id), $after_catalog);
+                $before_signature = (string) ($before_health[$configured_form_id]['signature'] ?? '');
+                $after_signature = (string) ($after['signature'] ?? '');
+                if ($before_signature === $after_signature) {
+                    continue;
+                }
+                if (($after['state'] ?? '') === 'blocked') {
+                    Odoo_CRM_Logger::record($configured_form_id, 0, false, 'ROUTING_CONFIGURATION_INVALIDATED');
+                } elseif (($after['state'] ?? '') === 'enabled_warning') {
+                    Odoo_CRM_Logger::record($configured_form_id, 0, true, 'ROUTING_CONFIGURATION_DRIFT');
+                } elseif (($after['state'] ?? '') === 'enabled' && in_array(($before_health[$configured_form_id]['state'] ?? ''), ['blocked', 'enabled_warning'], true)) {
+                    Odoo_CRM_Logger::record($configured_form_id, 0, true, 'ROUTING_CONFIGURATION_RESTORED');
+                }
+            }
+        }
+        $args = [
+            'page' => self::FORMS_SLUG,
+            'odoo_crm_notice' => !empty($result['success']) ? 'routing_refreshed' : 'routing_refresh_failed',
+        ];
+        if ($form_id > 0) {
+            $args['form_id'] = $form_id;
+        }
+        wp_safe_redirect(add_query_arg($args, admin_url('admin.php')));
+        exit;
     }
 
     public static function handle_save_form(): void
