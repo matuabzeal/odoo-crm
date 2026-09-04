@@ -4,7 +4,7 @@ Requires at least: 6.5
 Tested up to: 7.1
 Requires PHP: 8.1
 Requires Plugins: fluentform
-Stable tag: 0.9.0-dev
+Stable tag: 1.0.0
 License: Proprietary
 
 Connects selected Fluent Forms submissions to Odoo CRM using JSON-RPC.

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Odoo CRM
  * Description: Connects Fluent Forms submissions to Odoo CRM through a controlled integration layer.
- * Version: 0.9.0-dev
+ * Version: 1.0.0
  * Author: psybORGltd
  * Requires at least: 6.5
  * Requires PHP: 8.1
@@ -12,7 +12,7 @@
 
 defined('ABSPATH') || exit;
 
-define('ODOO_CRM_VERSION', '0.9.0-dev');
+define('ODOO_CRM_VERSION', '1.0.0');
 define('ODOO_CRM_PLUGIN_FILE', __FILE__);
 define('ODOO_CRM_PLUGIN_DIR', plugin_dir_path(__FILE__));
 
