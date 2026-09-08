@@ -16,7 +16,8 @@ final class Odoo_CRM_Form_Settings
         return [
             'enabled' => false,
             'record_title' => '',
-            'delivery_trigger' => 'submission',
+            'delivery_trigger' => 'submission',
+            'recurring_frequency' => '',
             'partner' => [
                 'enabled' => false,
                 'email_field' => '',
@@ -123,6 +124,10 @@ final class Odoo_CRM_Form_Settings
         $delivery_trigger = isset($input['delivery_trigger']) ? sanitize_key((string) $input['delivery_trigger']) : 'submission';
         if (!in_array($delivery_trigger, ['submission', 'payment_paid'], true)) {
             $delivery_trigger = 'submission';
+        }
+        $recurring_frequency = isset($input['recurring_frequency']) ? sanitize_key((string) $input['recurring_frequency']) : '';
+        if (!in_array($recurring_frequency, ['weekly', 'fortnightly', 'monthly', 'quarterly', 'annual'], true)) {
+            $recurring_frequency = '';
         }
 
         $partner_email_field = isset($input['partner']['email_field']) ? sanitize_key((string) $input['partner']['email_field']) : '';
@@ -137,7 +142,8 @@ final class Odoo_CRM_Form_Settings
         return [
             'enabled' => !empty($input['enabled']),
             'record_title' => isset($input['record_title']) ? sanitize_text_field((string) $input['record_title']) : '',
-            'delivery_trigger' => $delivery_trigger,
+            'delivery_trigger' => $delivery_trigger,
+            'recurring_frequency' => $recurring_frequency,
             'partner' => [
                 'enabled' => !empty($input['partner']['enabled']),
                 'email_field' => $partner_email_field,

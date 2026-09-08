@@ -22,6 +22,7 @@ require_once ODOO_CRM_PLUGIN_DIR . 'includes/class-odoo-crm-routing-catalog.php'
 require_once ODOO_CRM_PLUGIN_DIR . 'includes/class-odoo-crm-field-registry.php';
 require_once ODOO_CRM_PLUGIN_DIR . 'includes/class-odoo-crm-fluent-forms-adapter.php';
 require_once ODOO_CRM_PLUGIN_DIR . 'includes/class-odoo-crm-form-settings.php';
+require_once ODOO_CRM_PLUGIN_DIR . 'includes/class-odoo-crm-stripe-frequency.php';
 require_once ODOO_CRM_PLUGIN_DIR . 'includes/class-odoo-crm-notes-renderer.php';
 require_once ODOO_CRM_PLUGIN_DIR . 'includes/class-odoo-crm-field-mapper.php';
 require_once ODOO_CRM_PLUGIN_DIR . 'includes/class-odoo-crm-logger.php';
@@ -37,6 +38,7 @@ final class Odoo_CRM_Plugin
     {
         Odoo_CRM_Settings::init();
         Odoo_CRM_Form_Settings::init();
+        Odoo_CRM_Stripe_Frequency::init();
         Odoo_CRM_Admin::init();
         Odoo_CRM_Fluent_Forms_Listener::init();
     }
