@@ -376,4 +376,71 @@ final class Odoo_CRM_Client
                 : $message,
         ];
     }
+
+public function update_lead_lifecycle_context(int $lead_id, array $context): array
+    {
+        if ($lead_id <= 0) {
+            return ['success' => false, 'code' => 'INVALID_LEAD_ID'];
+        }
+
+        $authentication = $this->authenticate();
+        if (!$authentication['success']) {
+            return $authentication;
+        }
+
+        $read_result = $this->rpc_call('object', 'execute_kw', [
+            $this->connection['database'],
+            (int) $authentication['user_id'],
+            $this->connection['api_key'],
+            'crm.lead',
+            'read',
+            [[$lead_id], ['description']],
+        ]);
+        if (!$read_result['success']) {
+            return $read_result;
+        }
+
+        $rows = $read_result['result'] ?? [];
+        $current_description = '';
+        if (is_array($rows) && isset($rows[0]) && is_array($rows[0])) {
+            $current_description = isset($rows[0]['description']) && is_string($rows[0]['description']) ? $rows[0]['description'] : '';
+        }
+
+        $state = sanitize_text_field((string) ($context['state'] ?? ''));
+        $event_identity = sanitize_text_field((string) ($context['event_identity'] ?? ''));
+        $details = isset($context['details']) && is_array($context['details']) ? $context['details'] : [];
+        $detail_parts = [];
+        foreach ($details as $key => $value) {
+            if (!is_scalar($value) || (string) $value === '') {
+                continue;
+            }
+            $detail_parts[] = esc_html(sanitize_key((string) $key)) . ': ' . esc_html(sanitize_text_field((string) $value));
+        }
+
+        $lifecycle_line = '<p><strong>Payment lifecycle:</strong> ' . esc_html($state);
+        if ($event_identity !== '') {
+            $lifecycle_line .= ' <small>(' . esc_html($event_identity) . ')</small>';
+        }
+        if ($detail_parts) {
+            $lifecycle_line .= '<br>' . implode(' | ', $detail_parts);
+        }
+        $lifecycle_line .= '</p>';
+        $updated_description = rtrim($current_description) . "\n" . $lifecycle_line;
+
+        $write_result = $this->rpc_call('object', 'execute_kw', [
+            $this->connection['database'],
+            (int) $authentication['user_id'],
+            $this->connection['api_key'],
+            'crm.lead',
+            'write',
+            [[$lead_id], ['description' => $updated_description]],
+        ]);
+        if (!$write_result['success']) {
+            return $write_result;
+        }
+        if (empty($write_result['result'])) {
+            return ['success' => false, 'code' => 'LEAD_LIFECYCLE_UPDATE_FAILED'];
+        }
+        return ['success' => true, 'code' => 'LEAD_LIFECYCLE_UPDATED', 'lead_id' => $lead_id];
+    }
 }

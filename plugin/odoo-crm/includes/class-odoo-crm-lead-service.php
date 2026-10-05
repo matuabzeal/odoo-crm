@@ -122,4 +122,56 @@ final class Odoo_CRM_Lead_Service
 
         return $lead_fields;
     }
+
+public static function apply_payment_lifecycle(int $form_id, int $entry_id, string $state, string $event_identity, array $details = []): array
+    {
+        $allowed_states = [
+            'RECURRING_PAYMENT_FAILED',
+            'RECURRING_PAYMENT_RETRY_FAILED',
+            'RECURRING_PAYMENT_RECOVERED',
+            'PAYMENT_REFUNDED_PARTIAL',
+            'PAYMENT_REFUNDED_FULL',
+            'CANCELLATION_SCHEDULED',
+            'SUBSCRIPTION_CANCELLED',
+        ];
+        if (!in_array($state, $allowed_states, true) || $event_identity === '') {
+            return ['success' => false, 'code' => 'LIFECYCLE_EVENT_INVALID'];
+        }
+
+        $settings = Odoo_CRM_Form_Settings::get($form_id);
+        if (empty($settings['enabled'])) {
+            return ['success' => false, 'code' => 'INTEGRATION_DISABLED'];
+        }
+
+        $receipt = Odoo_CRM_Delivery_Receipt::get($form_id, $entry_id);
+        $lead_id = is_array($receipt) && isset($receipt['lead_id']) && is_numeric($receipt['lead_id']) ? (int) $receipt['lead_id'] : 0;
+        if ($lead_id <= 0) {
+            return ['success' => false, 'code' => 'LIFECYCLE_EXISTING_LEAD_NOT_FOUND'];
+        }
+
+        if (Odoo_CRM_Delivery_Receipt::lifecycle_exists($form_id, $entry_id, $state, $event_identity)) {
+            return ['success' => true, 'code' => 'LIFECYCLE_ALREADY_RECORDED', 'lead_id' => $lead_id];
+        }
+
+        $safe_details = [];
+        foreach ($details as $key => $value) {
+            if (!is_scalar($value) || (string) $value === '') {
+                continue;
+            }
+            $safe_details[sanitize_key((string) $key)] = sanitize_text_field((string) $value);
+        }
+
+        $client = new Odoo_CRM_Client(Odoo_CRM_Settings::get());
+        $result = $client->update_lead_lifecycle_context($lead_id, [
+            'state' => $state,
+            'event_identity' => sanitize_text_field($event_identity),
+            'details' => $safe_details,
+        ]);
+        if (empty($result['success'])) {
+            return $result;
+        }
+
+        Odoo_CRM_Delivery_Receipt::record_lifecycle($form_id, $entry_id, $lead_id, $state, $event_identity);
+        return ['success' => true, 'code' => 'LIFECYCLE_UPDATED', 'lead_id' => $lead_id, 'state' => $state];
+    }
 }
